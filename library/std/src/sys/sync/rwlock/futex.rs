@@ -1,6 +1,6 @@
-use crate::sync::atomic::AtomicU32;
 use crate::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use crate::sys::futex::{futex_wait, futex_wake, futex_wake_all};
+use crate::sys::sync::Futex;
+use crate::sys::futex::Atomic;
 
 pub struct RwLock {
     // The state consists of a 30-bit reader counter, a 'readers waiting' flag, and a 'writers waiting' flag.
@@ -10,10 +10,10 @@ pub struct RwLock {
     //   0x3FFF_FFFF: Write locked
     // Bit 30: Readers are waiting on this futex.
     // Bit 31: Writers are waiting on the writer_notify futex.
-    state: AtomicU32,
+    state: Atomic,
     // The 'condition variable' to notify writers through.
     // Incremented on every signal.
-    writer_notify: AtomicU32,
+    writer_notify: Atomic,
 }
 
 const READ_LOCKED: u32 = 1;
@@ -62,7 +62,7 @@ fn has_reached_max_readers(state: u32) -> bool {
 impl RwLock {
     #[inline]
     pub const fn new() -> Self {
-        Self { state: AtomicU32::new(0), writer_notify: AtomicU32::new(0) }
+        Self { state: Atomic::new(0), writer_notify: Atomic::new(0) }
     }
 
     #[inline]
@@ -132,7 +132,7 @@ impl RwLock {
             }
 
             // Wait for the state to change.
-            futex_wait(&self.state, state | READERS_WAITING, None);
+            self.state.wait(state | READERS_WAITING, None);
 
             // Spin again after waking up.
             state = self.spin_read();
@@ -213,7 +213,7 @@ impl RwLock {
             }
 
             // Wait for the state to change.
-            futex_wait(&self.writer_notify, seq, None);
+            self.writer_notify.wait(seq, None);
 
             // Spin again after waking up.
             state = self.spin_write();
@@ -261,27 +261,28 @@ impl RwLock {
             if self.wake_writer() {
                 return;
             }
-            // No writers were actually blocked on futex_wait, so we continue
-            // to wake up readers instead, since we can't be sure if we notified a writer.
+            // No writers were actually blocked on wait(), so we
+            // continue to wake up readers instead, since we can't be
+            // sure if we notified a writer.
             state = READERS_WAITING;
         }
 
         // If readers are waiting, wake them all up.
         if state == READERS_WAITING {
             if self.state.compare_exchange(state, 0, Relaxed, Relaxed).is_ok() {
-                futex_wake_all(&self.state);
+                self.state.wake_all();
             }
         }
     }
 
     /// This wakes one writer and returns true if we woke up a writer that was
-    /// blocked on futex_wait.
+    /// blocked on wait().
     ///
     /// If this returns false, it might still be the case that we notified a
     /// writer that was about to go to sleep.
     fn wake_writer(&self) -> bool {
         self.writer_notify.fetch_add(1, Release);
-        futex_wake(&self.writer_notify)
+        self.writer_notify.wake()
         // Note that FreeBSD and DragonFlyBSD don't tell us whether they woke
         // up any threads or not, and always return `false` here. That still
         // results in correct behaviour: it just means readers get woken up as

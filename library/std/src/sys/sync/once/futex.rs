@@ -1,9 +1,9 @@
 use crate::cell::Cell;
 use crate::sync as public;
-use crate::sync::atomic::AtomicU32;
 use crate::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use crate::sync::once::ExclusiveState;
-use crate::sys::futex::{futex_wait, futex_wake_all};
+use crate::sys::sync::Futex;
+use crate::sys::futex::Atomic;
 
 // On some platforms, the OS is very nice and handles the waiter queue for us.
 // This means we only need one atomic value with 4 states:
@@ -25,9 +25,9 @@ const COMPLETE: u32 = 3;
 /// May only be set if the state is not COMPLETE.
 const QUEUED: u32 = 4;
 
-// Threads wait by setting the QUEUED bit and calling `futex_wait` on the state
+// Threads wait by setting the QUEUED bit and calling `wait()` on the state
 // variable. When the running thread finishes, it will wake all waiting threads using
-// `futex_wake_all`.
+// `wake_all()`.
 
 const STATE_MASK: u32 = 0b11;
 
@@ -49,29 +49,29 @@ impl OnceState {
 }
 
 struct CompletionGuard<'a> {
-    state_and_queued: &'a AtomicU32,
+    state_and_queued: &'a Atomic,
     set_state_on_drop_to: u32,
 }
 
 impl<'a> Drop for CompletionGuard<'a> {
     fn drop(&mut self) {
         // Use release ordering to propagate changes to all threads checking
-        // up on the Once. `futex_wake_all` does its own synchronization, hence
+        // up on the Once. `wake_all()` does its own synchronization, hence
         // we do not need `AcqRel`.
         if self.state_and_queued.swap(self.set_state_on_drop_to, Release) & QUEUED != 0 {
-            futex_wake_all(self.state_and_queued);
+            self.state_and_queued.wake_all();
         }
     }
 }
 
 pub struct Once {
-    state_and_queued: AtomicU32,
+    state_and_queued: Atomic,
 }
 
 impl Once {
     #[inline]
     pub const fn new() -> Once {
-        Once { state_and_queued: AtomicU32::new(INCOMPLETE) }
+        Once { state_and_queued: Atomic::new(INCOMPLETE) }
     }
 
     #[inline]
@@ -128,7 +128,7 @@ impl Once {
                         }
                     }
 
-                    futex_wait(&self.state_and_queued, state_and_queued, None);
+                    self.state_and_queued.wait(state_and_queued, None);
                     state_and_queued = self.state_and_queued.load(Acquire);
                 }
             }
@@ -196,7 +196,7 @@ impl Once {
                         }
                     }
 
-                    futex_wait(&self.state_and_queued, state_and_queued, None);
+                    self.state_and_queued.wait(state_and_queued, None);
                     state_and_queued = self.state_and_queued.load(Acquire);
                 }
             }

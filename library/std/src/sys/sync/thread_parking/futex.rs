@@ -1,8 +1,10 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 use crate::pin::Pin;
 use crate::sync::atomic::Ordering::{Acquire, Release};
-use crate::sys::futex::{self, futex_wait, futex_wake};
+use crate::sys::futex;
 use crate::time::Duration;
+use crate::sys::sync::Futex;
+
 
 type Atomic = futex::SmallAtomic;
 type State = futex::SmallPrimitive;
@@ -52,7 +54,7 @@ impl Parker {
         }
         loop {
             // Wait for something to happen, assuming it's still set to PARKED.
-            futex_wait(&self.state, PARKED, None);
+            self.state.wait(PARKED, None);
             // Change NOTIFIED=>EMPTY and return in that case.
             if self.state.compare_exchange(NOTIFIED, EMPTY, Acquire, Acquire).is_ok() {
                 return;
@@ -72,7 +74,7 @@ impl Parker {
             return;
         }
         // Wait for something to happen, assuming it's still set to PARKED.
-        futex_wait(&self.state, PARKED, Some(timeout));
+        self.state.wait(PARKED, Some(timeout));
         // This is not just a store, because we need to establish a
         // release-acquire ordering with unpark().
         if self.state.swap(EMPTY, Acquire) == NOTIFIED {
@@ -94,7 +96,7 @@ impl Parker {
         // purpose, to make sure every unpark() has a release-acquire ordering
         // with park().
         if self.state.swap(NOTIFIED, Release) == PARKED {
-            futex_wake(&self.state);
+            self.state.wake();
         }
     }
 }

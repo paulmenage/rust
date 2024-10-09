@@ -1,6 +1,6 @@
-use crate::sync::atomic::AtomicU32;
 use crate::sync::atomic::Ordering::Relaxed;
-use crate::sys::futex::{futex_wait, futex_wake, futex_wake_all};
+use crate::sys::futex::Atomic;
+use crate::sys::sync::Futex;
 use crate::sys::sync::Mutex;
 use crate::time::Duration;
 
@@ -8,13 +8,13 @@ pub struct Condvar {
     // The value of this atomic is simply incremented on every notification.
     // This is used by `.wait()` to not miss any notifications after
     // unlocking the mutex and before waiting for notifications.
-    futex: AtomicU32,
+    futex: Atomic,
 }
 
 impl Condvar {
     #[inline]
     pub const fn new() -> Self {
-        Self { futex: AtomicU32::new(0) }
+        Self{futex: Atomic::new(0)}
     }
 
     // All the memory orderings here are `Relaxed`,
@@ -22,12 +22,12 @@ impl Condvar {
 
     pub fn notify_one(&self) {
         self.futex.fetch_add(1, Relaxed);
-        futex_wake(&self.futex);
+        self.futex.wake();
     }
 
     pub fn notify_all(&self) {
         self.futex.fetch_add(1, Relaxed);
-        futex_wake_all(&self.futex);
+        self.futex.wake_all();
     }
 
     pub unsafe fn wait(&self, mutex: &Mutex) {
@@ -47,7 +47,7 @@ impl Condvar {
 
         // Wait, but only if there hasn't been any
         // notification since we unlocked the mutex.
-        let r = futex_wait(&self.futex, futex_value, timeout);
+        let r = self.futex.wait(futex_value, timeout);
 
         // Lock the mutex again.
         mutex.lock();

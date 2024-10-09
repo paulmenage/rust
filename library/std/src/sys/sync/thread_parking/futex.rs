@@ -1,18 +1,17 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 use crate::pin::Pin;
 use crate::sync::atomic::Ordering::{Acquire, Release};
-use crate::sys::futex::{self, futex_wait, futex_wake};
+use crate::sys::futex::{SmallFutex, SmallPrimitive};
 use crate::time::Duration;
 
-type Atomic = futex::SmallAtomic;
-type State = futex::SmallPrimitive;
+type State = SmallPrimitive;
 
 const PARKED: State = State::MAX;
 const EMPTY: State = 0;
 const NOTIFIED: State = 1;
 
 pub struct Parker {
-    state: Atomic,
+    state: SmallFutex,
 }
 
 // Notes about memory ordering:
@@ -39,7 +38,7 @@ impl Parker {
     /// Constructs the futex parker. The UNIX parker implementation
     /// requires this to happen in-place.
     pub unsafe fn new_in_place(parker: *mut Parker) {
-        unsafe { parker.write(Self { state: Atomic::new(EMPTY) }) };
+        unsafe { parker.write(Self { state: SmallFutex::new(EMPTY) }) };
     }
 
     // Assumes this is only called by the thread that owns the Parker,
@@ -52,7 +51,7 @@ impl Parker {
         }
         loop {
             // Wait for something to happen, assuming it's still set to PARKED.
-            futex_wait(&self.state, PARKED, None);
+            self.state.wait(PARKED, None);
             // Change NOTIFIED=>EMPTY and return in that case.
             if self.state.compare_exchange(NOTIFIED, EMPTY, Acquire, Acquire).is_ok() {
                 return;
@@ -72,7 +71,7 @@ impl Parker {
             return;
         }
         // Wait for something to happen, assuming it's still set to PARKED.
-        futex_wait(&self.state, PARKED, Some(timeout));
+        self.state.wait(PARKED, Some(timeout));
         // This is not just a store, because we need to establish a
         // release-acquire ordering with unpark().
         if self.state.swap(EMPTY, Acquire) == NOTIFIED {
@@ -94,7 +93,7 @@ impl Parker {
         // purpose, to make sure every unpark() has a release-acquire ordering
         // with park().
         if self.state.swap(NOTIFIED, Release) == PARKED {
-            futex_wake(&self.state);
+            self.state.wake();
         }
     }
 }

@@ -3,6 +3,11 @@ use crate::ptr::null;
 use crate::sync::atomic::AtomicU32;
 use crate::time::Duration;
 
+/// An atomic for use as a futex that is at least 32-bits but may be larger
+pub type Atomic = AtomicU32;
+/// Must be the underlying type of Atomic
+pub type Primitive = u32;
+
 /// An atomic for use as a futex that is at least 8-bits but may be larger.
 pub type SmallAtomic = AtomicU32;
 /// Must be the underlying type of SmallAtomic

@@ -1,12 +1,9 @@
 use crate::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use crate::sys::futex::{self, futex_wait, futex_wake};
+use crate::sys::futex::{SmallFutex, SmallPrimitive};
 
-type Atomic = futex::SmallAtomic;
-type State = futex::SmallPrimitive;
+type State = SmallPrimitive;
 
-pub struct Mutex {
-    futex: Atomic,
-}
+pub struct Mutex{futex: SmallFutex}
 
 const UNLOCKED: State = 0;
 const LOCKED: State = 1; // locked, no other threads waiting
@@ -15,7 +12,7 @@ const CONTENDED: State = 2; // locked, and other threads waiting (contended)
 impl Mutex {
     #[inline]
     pub const fn new() -> Self {
-        Self { futex: Atomic::new(UNLOCKED) }
+        Self{ futex: SmallFutex::new(UNLOCKED)}
     }
 
     #[inline]
@@ -54,7 +51,7 @@ impl Mutex {
             }
 
             // Wait for the futex to change state, assuming it is still CONTENDED.
-            futex_wait(&self.futex, CONTENDED, None);
+            self.futex.wait(CONTENDED, None);
 
             // Spin again after waking up.
             state = self.spin();
@@ -92,6 +89,6 @@ impl Mutex {
 
     #[cold]
     fn wake(&self) {
-        futex_wake(&self.futex);
+        self.futex.wake();
     }
 }

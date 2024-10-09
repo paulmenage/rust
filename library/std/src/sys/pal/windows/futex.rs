@@ -1,7 +1,7 @@
 use core::ffi::c_void;
 use core::sync::atomic::{
-    AtomicBool, AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicIsize, AtomicPtr, AtomicU8,
-    AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
+    AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicPtr, AtomicU16,
+    AtomicU32, AtomicU64, AtomicU8, AtomicUsize,
 };
 use core::time::Duration;
 use core::{mem, ptr};
@@ -9,12 +9,18 @@ use core::{mem, ptr};
 use super::api::{self, WinError};
 use crate::sys::{c, dur2timeout};
 
-/// An atomic for use as a futex that is at least 8-bits but may be larger.
-pub type SmallAtomic = AtomicU8;
+pub struct _Futex<W: Waitable> {
+    val: W::Atomic,
+}
+
+/// A futex that is at least 32-bits but may be larger
+pub type Futex = _Futex<u32>;
+
+/// A futex that is at least 8-bits but may be larger.
+pub type SmallFutex = _Futex<u8>;
 /// Must be the underlying type of SmallAtomic
 pub type SmallPrimitive = u8;
 
-pub unsafe trait Futex {}
 pub unsafe trait Waitable {
     type Atomic;
 }
@@ -24,7 +30,6 @@ macro_rules! unsafe_waitable_int {
             unsafe impl Waitable for $int {
                 type Atomic = $atomic;
             }
-            unsafe impl Futex for $atomic {}
         )*
     };
 }
@@ -47,7 +52,6 @@ unsafe impl<T> Waitable for *const T {
 unsafe impl<T> Waitable for *mut T {
     type Atomic = AtomicPtr<T>;
 }
-unsafe impl<T> Futex for AtomicPtr<T> {}
 
 pub fn wait_on_address<W: Waitable>(
     address: &W::Atomic,
@@ -77,16 +81,25 @@ pub fn wake_by_address_all<T: Futex>(address: &T) {
     }
 }
 
-pub fn futex_wait<W: Waitable>(futex: &W::Atomic, expected: W, timeout: Option<Duration>) -> bool {
-    // return false only on timeout
-    wait_on_address(futex, expected, timeout) || api::get_last_error() != WinError::TIMEOUT
+impl<T: Waitable> _Futex<T> {
+    pub fn wait(&self, expected: W, timeout: Option<Duration>) -> bool {
+        // return false only on timeout
+        wait_on_address(&self.val, expected, timeout) || api::get_last_error() != WinError::TIMEOUT
+    }
+
+    pub fn wake(&self) -> bool {
+        wake_by_address_single(&self.val);
+        false
+    }
+
+    pub fn wake_all(&self) {
+        wake_by_address_all(&self.val)
+    }
 }
 
-pub fn futex_wake<T: Futex>(futex: &T) -> bool {
-    wake_by_address_single(futex);
-    false
-}
-
-pub fn futex_wake_all<T: Futex>(futex: &T) {
-    wake_by_address_all(futex)
+impl<T: Waitable> Deref for _Futex<T> {
+    type Target = T::Atomic;
+    fn deref(&self) -> &Self::Target {
+        return &self.val
+    }
 }
